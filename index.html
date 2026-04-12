@@ -109,7 +109,19 @@ footer p{font-size:11px;color:#a09d95;font-weight:500}
 .popup-grid{display:grid;grid-template-columns:auto auto;gap:6px 12px;font-size:12px}
 .popup-grid .label{color:#8a8577;margin:0}
 .map-empty{padding:18px;border:1px dashed #e0dbd2;border-radius:10px;background:#faf8f5;color:#8a8577;font-size:13px}
-@media (max-width:1100px){.map-shell{grid-template-columns:1fr}.map-sidebar{position:static}#plant-map-canvas{height:560px}}
+
+.map-detail-panel{background:#fff;border:1px solid #e0dbd2;border-radius:14px;padding:24px;margin-top:20px;box-shadow:0 2px 12px #0000000a;display:none}
+.map-detail-panel.visible{display:block}
+.map-detail-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;padding-bottom:14px;border-bottom:2px solid #e0dbd2}
+.map-detail-header h3{font-size:18px;color:#0e4d3a;margin:0;font-weight:800}
+.map-detail-header .plant-meta{font-size:12px;color:#8a8577;margin-top:4px}
+.map-detail-close{background:#f4f1eb;border:1px solid #e0dbd2;color:#8a8577;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;transition:all .2s;font-family:inherit}
+.map-detail-close:hover{background:#ef4444;color:#fff;border-color:#ef4444}
+.ts-chart-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.ts-chart-card{background:#faf8f5;border:1px solid #e0dbd2;border-radius:12px;padding:16px}
+.ts-chart-card h4{font-size:12px;color:#8a8577;text-transform:uppercase;letter-spacing:.5px;font-weight:700;margin:0 0 10px}
+.ts-chart-card canvas{width:100%!important;height:180px!important}
+@media (max-width:1100px){.map-shell{grid-template-columns:1fr}.map-sidebar{position:static}#plant-map-canvas{height:560px}.ts-chart-grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -997,7 +1009,9 @@ function renderMap(){
             <div id="plant-map-canvas"></div>
           </div>
         </div>
-      </div>`;
+      </div>
+
+      <div id="map-plant-detail" class="map-detail-panel"></div>`;
     mapPopulateStateFilter();
     mapState.map = L.map('plant-map-canvas',{zoomSnap:0.25}).setView([22.8,79.0],5);
     L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -1039,6 +1053,7 @@ function updateMapView(){
       fillColor: mapMetricColor(value,max),
       fillOpacity: 0.82
     }).bindPopup(mapPopupHtml(r, metric, year));
+    marker.on('click', ()=>showPlantTimeSeries(r.plant, r));
     marker.addTo(mapState.layer);
     bounds.push([r.lat,r.lng]);
   });
@@ -1047,6 +1062,83 @@ function updateMapView(){
     mapState.map.fitBounds(bounds, {padding:[30,30]});
     mapState.firstFit = false;
   }
+}
+
+let tsCharts = {};
+function destroyTsCharts(){Object.values(tsCharts).forEach(c=>c.destroy());tsCharts={}}
+
+function showPlantTimeSeries(plantName, record){
+  const panel = document.getElementById('map-plant-detail');
+  if(!panel) return;
+  destroyTsCharts();
+
+  const p = mapGetEmissionParams();
+  const plantMonthly = MONTHLY.filter(r=>r.pl===plantName);
+  if(!plantMonthly.length){panel.classList.remove('visible');return;}
+
+  const monthOrder={January:1,February:2,March:3,April:4,May:5,June:6,July:7,August:8,September:9,October:10,November:11,December:12};
+  plantMonthly.sort((a,b)=>{
+    const [am,ay]=a.p.split(' '), [bm,by]=b.p.split(' ');
+    return (Number(ay)-Number(by))||((monthOrder[am]||0)-(monthOrder[bm]||0));
+  });
+
+  const labels=plantMonthly.map(r=>sp(r.p));
+  const coalData=[], so2Data=[], noxData=[], coData=[], pm25Data=[], pm10Data=[];
+  plantMonthly.forEach(r=>{
+    const m=mapComputeMonthlyMetrics(r,p);
+    coalData.push(m.coal);
+    so2Data.push(m.so2);
+    noxData.push(m.nox);
+    coData.push(m.co);
+    pm25Data.push(m.pm25);
+    pm10Data.push(m.pm10);
+  });
+
+  const meta = record || {};
+  panel.innerHTML=`
+    <div class="map-detail-header">
+      <div>
+        <h3>${plantName}</h3>
+        <div class="plant-meta">${meta.state||'—'} · ${meta.region||'—'} · ${meta.installedMW ? fmtFull(meta.installedMW)+' MW' : '—'} · ${plantMonthly.length} months of data</div>
+      </div>
+      <button class="map-detail-close" onclick="document.getElementById('map-plant-detail').classList.remove('visible');destroyTsCharts()">✕ Close</button>
+    </div>
+    <div class="ts-chart-grid">
+      <div class="ts-chart-card"><h4>Coal Consumption ('000 tonnes)</h4><canvas id="ts-coal"></canvas></div>
+      <div class="ts-chart-card"><h4>SO₂ Emissions (tonnes)</h4><canvas id="ts-so2"></canvas></div>
+      <div class="ts-chart-card"><h4>NOₓ Emissions (tonnes)</h4><canvas id="ts-nox"></canvas></div>
+      <div class="ts-chart-card"><h4>CO Emissions (tonnes)</h4><canvas id="ts-co"></canvas></div>
+      <div class="ts-chart-card"><h4>PM₂.₅ Emissions (tonnes)</h4><canvas id="ts-pm25"></canvas></div>
+      <div class="ts-chart-card"><h4>PM₁₀ Emissions (tonnes)</h4><canvas id="ts-pm10"></canvas></div>
+    </div>`;
+  panel.classList.add('visible');
+  panel.scrollIntoView({behavior:'smooth',block:'start'});
+
+  const chartSets=[
+    {id:'ts-coal', data:coalData, color:'#0e4d3a', label:'Coal'},
+    {id:'ts-so2', data:so2Data, color:'#dc2626', label:'SO₂'},
+    {id:'ts-nox', data:noxData, color:'#d97706', label:'NOₓ'},
+    {id:'ts-co', data:coData, color:'#7c3aed', label:'CO'},
+    {id:'ts-pm25', data:pm25Data, color:'#2563eb', label:'PM₂.₅'},
+    {id:'ts-pm10', data:pm10Data, color:'#059669', label:'PM₁₀'}
+  ];
+  chartSets.forEach(({id,data,color,label})=>{
+    const ctx=document.getElementById(id)?.getContext('2d');
+    if(!ctx)return;
+    tsCharts[id]=new Chart(ctx,{
+      type:'line',
+      data:{labels,datasets:[{label,data,borderColor:color,backgroundColor:color+'18',fill:true,tension:.35,pointRadius:2,pointHoverRadius:5,borderWidth:2}]},
+      options:{
+        responsive:true,
+        maintainAspectRatio:false,
+        plugins:{legend:{display:false},tooltip:{callbacks:{label:item=>label+': '+fmtFull(item.raw)}}},
+        scales:{
+          x:{ticks:{color:'#a09d95',maxRotation:45,font:{size:10},maxTicksLimit:12},grid:{display:false}},
+          y:{ticks:{color:'#a09d95',callback:v=>fmt(v),font:{size:10}},grid:{color:'#e0dbd220'}}
+        }
+      }
+    });
+  });
 }
 
 // Init
